@@ -77,7 +77,7 @@ def select_input_file():
 # =========================================================================
 HELP_TEXT = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          USER GUIDE – GNSS velocity Viewer
+          USER GUIDE – GNSS Velocity Viewer
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MODE 1 – SINGLE STATION REFERENCE
@@ -122,7 +122,7 @@ MAP NAVIGATION
 def show_help():
     """Displays the user guide in a separate Tkinter window."""
     win = tk.Toplevel()
-    win.title("Guide – GNSS velocity Viewer")
+    win.title("Guide – GNSS Velocity Viewer")
     win.resizable(True, True)
 
     frame = tk.Frame(win)
@@ -288,7 +288,7 @@ class InteractiveGNSSMap:
         self.fig, self.ax = plt.subplots(figsize=(14, 9))
         
         # Rename the window to remove the default "Figure 1"
-        self.fig.canvas.manager.set_window_title("GNSS velocity Viewer - ITRF2014")
+        self.fig.canvas.manager.set_window_title("GNSS Velocity Viewer - ITRF2014")
         
         # Layout optimization: expands the map and leaves dedicated space at the bottom for buttons
         self.fig.subplots_adjust(left=0.06, right=0.92, top=0.92, bottom=0.15)
@@ -639,7 +639,7 @@ if __name__ == '__main__':
             current_dir = os.path.dirname(sys.executable)
         else:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-        filepath = os.path.join(current_dir, 'gnss_rino_input.txt')
+        filepath = os.path.join(current_dir, 'vel_EPOS.txt')
         if not os.path.exists(filepath):
             print(f"[ERROR] No file selected and default file not found:\n  {filepath}")
             input("\nPress ENTER to exit...")
