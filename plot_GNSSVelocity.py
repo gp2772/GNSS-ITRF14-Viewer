@@ -1,5 +1,7 @@
 import os
 import sys
+import site
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
@@ -8,96 +10,119 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import tkinter.ttk as ttk
 
-# =========================================================================
-# PARACADUTE WINDOWS & ESEGUIBILE (.EXE) DI SICUREZZA
-# =========================================================================
-if getattr(sys, 'frozen', False):
-    base_dir = sys._MEIPASS
-    percorso_rasterio = os.path.join(base_dir, "rasterio", "proj_data")
-    percorso_pyproj   = os.path.join(base_dir, "pyproj", "proj_dir", "share", "proj")
-else:
-    percorso_rasterio = r"C:\Users\cecer\AppData\Roaming\Python\Python313\site-packages\rasterio\proj_data"
-    percorso_pyproj   = r"C:\Users\cecer\AppData\Roaming\Python\Python313\site-packages\pyproj\proj_dir\share\proj"
+# Suppress generic matplotlib/contextily warnings in the terminal
+warnings.filterwarnings("ignore")
 
-if os.path.exists(percorso_rasterio):
-    os.environ['PROJ_DATA'] = percorso_rasterio
-    os.environ['PROJ_LIB']  = percorso_rasterio
-elif os.path.exists(percorso_pyproj):
-    os.environ['PROJ_DATA'] = percorso_pyproj
-    os.environ['PROJ_LIB']  = percorso_pyproj
+# =========================================================================
+# PROJ.DB & ENVIRONMENT FAILSAFE (NO-IMPORT APPROACH)
+# =========================================================================
+def setup_proj_environment():
+    """
+    Finds proj.db WITHOUT importing rasterio/pyproj.
+    Importing them before setting PROJ_LIB freezes the C-extension 
+    with empty/wrong environment variables, causing a crash.
+    """
+    search_paths = []
+    
+    # Add PyInstaller temp path if running as a compiled .exe
+    if getattr(sys, 'frozen', False):
+        search_paths.append(sys._MEIPASS)
+    
+    # Add system and user site-packages (where pip installs libraries)
+    search_paths.extend(site.getsitepackages())
+    if hasattr(site, 'getusersitepackages'):
+        search_paths.append(site.getusersitepackages())
+        
+    for sp in search_paths:
+        candidates = [
+            os.path.join(sp, "rasterio", "proj_data"),
+            os.path.join(sp, "pyproj", "proj_dir", "share", "proj"),
+            os.path.join(sp, "osgeo", "data", "proj")
+        ]
+        for c in candidates:
+            # Check if proj.db actually exists in this folder
+            if os.path.isfile(os.path.join(c, "proj.db")):
+                os.environ['PROJ_LIB'] = c
+                os.environ['PROJ_DATA'] = c
+                return
+
+setup_proj_environment()
 # =========================================================================
 
+# Now it is safe to import contextily and its rasterio backend
 try:
     import contextily as ctx
 except ImportError as e:
-    print(f"\n[ERRORE] Problema con contextily o dipendenze: {e}\n")
-    input("Premi INVIO per uscire...")
+    print(f"\n[ERROR] Problem with contextily or dependencies: {e}\n")
+    input("Press ENTER to exit...")
     sys.exit()
 
-
 # =========================================================================
-# SELEZIONE FILE TRAMITE ESPLORA RISORSE
+# INPUT FILE SELECTION (FILE EXPLORER)
 # =========================================================================
-def seleziona_file_input():
+def select_input_file():
+    """Opens a file dialog to select the GNSS input file."""
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
-    percorso = filedialog.askopenfilename(
-        title="Seleziona il file di velocità GNSS",
-        filetypes=[("File di testo", "*.txt"), ("Tutti i file", "*.*")]
+    filepath = filedialog.askopenfilename(
+        title="Select GNSS velocity file",
+        filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
     )
     root.destroy()
-    return percorso if percorso else None
-
+    return filepath if filepath else None
 
 # =========================================================================
-# FINESTRA AIUTO
+# HELP WINDOW
 # =========================================================================
-TESTO_AIUTO = """
+HELP_TEXT = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          GUIDA ALL'USO – Visualizzatore Velocità GNSS
+          USER GUIDE – GNSS velocity Viewer
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-MODALITÀ 1 – RIFERIMENTO SINGOLA STAZIONE
+MODE 1 – SINGLE STATION REFERENCE
 ──────────────────────────────────────────
-  • Click sinistro su un sito  →  Riferimento su singola stazione.
+  • Left Click on a site  →  Sets a single station as the reference.
+    Subtracts its absolute velocity from the entire network.
 
-MODALITÀ 2 – RIFERIMENTO SU AREA (MULTI-STAZIONE)
+MODE 2 – REGIONAL REFERENCE (MULTI-STATION)
 ───────────────────────────────────────────────────
-  • [M]  →  entra / esci dalla modalità multi-stazione (inner constraint).
-  • Ctrl+Click su più siti per aggiungerli al gruppo.
+  • [M]  →  Toggle multi-station mode (inner constraint).
+  • Ctrl+Click on multiple sites to add them to the reference group.
+    Subtracts the weighted average of the selected group.
 
-MODALITÀ 3 – RIFERIMENTO EURASIA (ITRF2014)
+MODE 3 – EURASIA REFERENCE (ITRF2014)
 ───────────────────────────────────────────────────
-  • [E]  →  Sottrae "al volo" il polo di rotazione della placca Eurasiatica, 
-            utilizzando il modello ITRF2014 PMM (Altamimi et al., 2017).
+  • [E]  →  Subtracts on-the-fly the Eurasian plate rotation pole, 
+            using the ITRF2014 PMM model (Altamimi et al., 2017).
 
-MODALITÀ 4 – RIFERIMENTO POLO DI ADRIA (APPROCCIO RIGOROSO)
+MODE 4 – ADRIA POLE REFERENCE (RIGOROUS APPROACH)
 ───────────────────────────────────────────────────
-  • [A]  →  Applica un filtraggio cinematico a due stadi:
-             1. Sottrae il frame assoluto ITRF2014 -> Eurasia
-             2. Sottrae il polo relativo Eurasia -> Adria (D'Agostino et al., 2008)
-            La posizione del polo (45.790°N, 7.780°E) viene visualizzata
-            con una stella magenta sulla mappa.
+  • [A]  →  Applies a two-stage kinematic filtering:
+             1. Subtracts the absolute frame ITRF2014 -> Eurasia
+             2. Subtracts the relative pole Eurasia -> Adria (D'Agostino et al., 2008)
+            The pole position (45.790°N, 7.780°E) is displayed
+            with a magenta star on the map.
 
-NAVIGAZIONE MAPPA
+MAP NAVIGATION
 ─────────────────
-  Tasti:
-    [+] o [=]  →  aumenta la scala delle frecce
-    [-]        →  diminuisce la scala delle frecce
-    [T]        →  apre la tabella con i valori correnti
-    [M]        →  attiva Modalità Multi-stazione
-    [E]        →  attiva Placca Eurasia (ITRF2014)
-    [A]        →  attiva Microplacca Adria (Rigoroso ITRF2014)
-    [S]        →  mostra / nascondi le sigle delle stazioni
-    [R]        →  resetta (torna ai vettori ITRF assoluti)
-    [?]        →  mostra questa guida
+  Shortcuts:
+    [+] or [=]  →  Increase vector arrow scale
+    [-]         →  Decrease vector arrow scale
+    [T]         →  Open data table with current values
+    [M]         →  Toggle Multi-station Mode
+    [E]         →  Toggle Eurasia Plate (ITRF2014)
+    [A]         →  Toggle Adria Microplate (Rigorous ITRF2014)
+    [S]         →  Show / Hide station labels
+    [R]         →  Reset (revert to absolute ITRF vectors)
+    [?]         →  Show this guide
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-def mostra_aiuto():
+def show_help():
+    """Displays the user guide in a separate Tkinter window."""
     win = tk.Toplevel()
-    win.title("Guida – Visualizzatore Velocità GNSS")
+    win.title("Guide – GNSS velocity Viewer")
     win.resizable(True, True)
 
     frame = tk.Frame(win)
@@ -113,46 +138,46 @@ def mostra_aiuto():
     frame.rowconfigure(0, weight=1)
     frame.columnconfigure(0, weight=1)
 
-    txt.insert(tk.END, TESTO_AIUTO)
+    txt.insert(tk.END, HELP_TEXT)
     txt.configure(state=tk.DISABLED)
 
-    tk.Button(win, text="Chiudi", command=win.destroy,
+    tk.Button(win, text="Close", command=win.destroy,
               bg="#c0c0c0", font=("Arial", 10)).pack(pady=(0, 8))
 
-
 # =========================================================================
-# FINESTRA TABELLA VELOCITÀ
+# VELOCITY TABLE WINDOW
 # =========================================================================
-class FinestraTabella:
-    def __init__(self, nomi, lon, lat, de, dn, du, descrizione_riferimento, percorso_input):
-        self.nomi = nomi
+class TableWindow:
+    """Tkinter window to display current velocities and export them to a file."""
+    def __init__(self, names, lon, lat, de, dn, du, reference_desc, input_path):
+        self.names = names
         self.lon = lon
         self.lat = lat
         self.de = de
         self.dn = dn
         self.du = du
-        self.descrizione_riferimento = descrizione_riferimento
-        self.percorso_input = percorso_input
+        self.reference_desc = reference_desc
+        self.input_path = input_path
 
         self.root = tk.Toplevel()
-        self.root.title("Tabella Velocità GNSS")
+        self.root.title("GNSS Velocity Table")
         self.root.resizable(True, True)
-        self._costruisci_ui()
+        self._build_ui()
 
-    def _costruisci_ui(self):
-        stato = self.descrizione_riferimento or "Velocità assolute"
-        tk.Label(self.root, text=stato, font=("Arial", 10, "bold"),
+    def _build_ui(self):
+        state_label = self.reference_desc or "Absolute velocities"
+        tk.Label(self.root, text=state_label, font=("Arial", 10, "bold"),
                  fg="navy", wraplength=560).pack(pady=(8, 2), padx=10)
 
         frame = tk.Frame(self.root)
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
 
-        cols = ("Stazione", "Lon (°)", "Lat (°)", "dE (mm/yr)", "dN (mm/yr)", "dU (mm/yr)")
+        cols = ("Station", "Lon (°)", "Lat (°)", "dE (mm/yr)", "dN (mm/yr)", "dU (mm/yr)")
         self.tree = ttk.Treeview(frame, columns=cols, show="headings", height=20)
 
-        for col, larg in zip(cols, [110, 90, 90, 90, 90, 90]):
+        for col, width in zip(cols, [110, 90, 90, 90, 90, 90]):
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=larg, anchor="center")
+            self.tree.column(col, width=width, anchor="center")
 
         sy = ttk.Scrollbar(frame, orient=tk.VERTICAL,   command=self.tree.yview)
         sx = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -163,64 +188,64 @@ class FinestraTabella:
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure("pari",    background="#f0f4ff")
-        self.tree.tag_configure("dispari", background="#ffffff")
+        self.tree.tag_configure("even", background="#f0f4ff")
+        self.tree.tag_configure("odd",  background="#ffffff")
 
-        for i, nome in enumerate(self.nomi):
-            tag = "pari" if i % 2 == 0 else "dispari"
+        for i, name in enumerate(self.names):
+            tag = "even" if i % 2 == 0 else "odd"
             self.tree.insert("", tk.END, values=(
-                nome,
+                name,
                 f"{self.lon[i]:.5f}", f"{self.lat[i]:.5f}",
                 f"{self.de[i]:.4f}",  f"{self.dn[i]:.4f}",  f"{self.du[i]:.4f}",
             ), tags=(tag,))
 
         tk.Button(
-            self.root, text="💾  Esporta velocità in file .txt",
-            command=self._esporta, bg="#2060a0", fg="white",
+            self.root, text="💾  Export velocities to .txt",
+            command=self._export, bg="#2060a0", fg="white",
             font=("Arial", 10, "bold"), relief=tk.FLAT, padx=10, pady=6
         ).pack(pady=(4, 10))
 
-    def _esporta(self):
-        cartella_default = os.path.dirname(self.percorso_input)
-        tag_nome = (self.descrizione_riferimento or "assolute") \
-                       .replace(" ", "_").replace(":", "")[:40]
-        nome_default = f"velocita_{tag_nome}.txt"
+    def _export(self):
+        """Handles the logic for exporting the current table to a text file."""
+        default_folder = os.path.dirname(self.input_path)
+        tag_name = (self.reference_desc or "absolute") \
+                       .replace(" ", "_").replace(":", "").replace("->","-")[:40]
+        default_name = f"velocities_{tag_name}.txt"
 
         root_tmp = tk.Tk(); root_tmp.withdraw()
         root_tmp.attributes('-topmost', True)
-        percorso_out = filedialog.asksaveasfilename(
-            title="Salva velocità GNSS",
-            initialdir=cartella_default, initialfile=nome_default,
+        out_path = filedialog.asksaveasfilename(
+            title="Save GNSS velocities",
+            initialdir=default_folder, initialfile=default_name,
             defaultextension=".txt",
-            filetypes=[("File di testo", "*.txt"), ("Tutti i file", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         root_tmp.destroy()
-        if not percorso_out:
+        if not out_path:
             return
 
         try:
-            with open(percorso_out, 'w') as f:
-                f.write(f"# {self.descrizione_riferimento or 'Velocità GNSS assolute'}\n")
-                f.write("# Formato: Lon(°)  Lat(°)  dE(mm/yr)  dN(mm/yr)  dU(mm/yr)  # Nome_Stazione\n#\n")
-                for i, nome in enumerate(self.nomi):
+            with open(out_path, 'w') as f:
+                f.write(f"# {self.reference_desc or 'Absolute GNSS Velocities'}\n")
+                f.write("# Format: Lon(°)  Lat(°)  dE(mm/yr)  dN(mm/yr)  dU(mm/yr)  # Station_Name\n#\n")
+                for i, name in enumerate(self.names):
                     f.write(f"{self.lon[i]:.5f}  {self.lat[i]:.5f}  "
                             f"{self.de[i]:.4f}  {self.dn[i]:.4f}  {self.du[i]:.4f}"
-                            f"  # {nome}\n")
-            messagebox.showinfo("Esportazione completata",
-                                f"File salvato:\n{percorso_out}", parent=self.root)
+                            f"  # {name}\n")
+            messagebox.showinfo("Export complete",
+                                f"File saved successfully:\n{out_path}", parent=self.root)
         except Exception as err:
-            messagebox.showerror("Errore di scrittura",
-                                 f"Impossibile salvare:\n{err}", parent=self.root)
-
+            messagebox.showerror("Write Error",
+                                 f"Unable to save file:\n{err}", parent=self.root)
 
 # =========================================================================
-# CLASSE PRINCIPALE – MAPPA INTERATTIVA
+# MAIN CLASS – INTERACTIVE MAP
 # =========================================================================
-class MappaInterattivaGNSSMappa:
+class InteractiveGNSSMap:
     def __init__(self, filename):
         self.filename = filename
 
-        # --- lettura dati ---
+        # --- Read data ---
         self.lon, self.lat, self.de, self.dn, self.du, self.names = [], [], [], [], [], []
         with open(filename, 'r') as f:
             for line in f:
@@ -231,7 +256,7 @@ class MappaInterattivaGNSSMappa:
                     name = comment_part.strip()
                 else:
                     data_part = line
-                    name = f"Sito_{len(self.names)}"
+                    name = f"Site_{len(self.names)}"
                 vals = [float(x) for x in data_part.split()]
                 if len(vals) >= 5:
                     self.lon.append(vals[0]); self.lat.append(vals[1])
@@ -242,116 +267,121 @@ class MappaInterattivaGNSSMappa:
         self.de, self.dn, self.du = np.array(self.de), np.array(self.dn), np.array(self.du)
         N = len(self.names)
 
-        # --- proiezione Web Mercator ---
+        # --- Web Mercator projection ---
         self.R_web = 6378137.0
         self.x_web = self.R_web * np.radians(self.lon)
         self.y_web = self.R_web * np.log(np.tan(np.pi / 4.0 + np.radians(self.lat) / 2.0))
 
-        # --- stato riferimento ---
+        # --- Reference states ---
         self.ref_idx        = None          
         self.multi_set      = set()         
-        self.modo_multi     = False         
-        self.modo_eurasia   = False         
-        self.modo_adria     = False         
-        self.mostra_sigle   = True          # Variabile per gestire la visibilità dei nomi
+        self.mode_multi     = False         
+        self.mode_eurasia   = False         
+        self.mode_adria     = False         
+        self.show_labels    = True          # Manage label visibility
 
-        # --- stato UI ---
-        self._finestra_tab  = None
-        self.testi_sigle    = []            # Lista che conterrà i testi sulla mappa
+        # --- UI state ---
+        self._table_window  = None
+        self.label_texts    = []            # List holding text objects
 
-        # ---- figura ----
-        self.fig, self.ax = plt.subplots(figsize=(13, 11))
+        # ---- Figure setup ----
+        self.fig, self.ax = plt.subplots(figsize=(14, 9))
         
-        # Aumentato il margine inferiore per lasciare spazio a freccia e bottoni
-        self.fig.subplots_adjust(bottom=0.12)
+        # Rename the window to remove the default "Figure 1"
+        self.fig.canvas.manager.set_window_title("GNSS velocity Viewer - ITRF2014")
+        
+        # Layout optimization: expands the map and leaves dedicated space at the bottom for buttons
+        self.fig.subplots_adjust(left=0.06, right=0.92, top=0.92, bottom=0.15)
 
         self.ax.set_xlim(self.x_web.min() - 2000, self.x_web.max() + 2000)
         self.ax.set_ylim(self.y_web.min() - 2000, self.y_web.max() + 2000)
 
-        ctx.add_basemap(self.ax, source=ctx.providers.CartoDB.PositronNoLabels)
+        # Neutral Esri basemap to avoid OpenStreetMap 403 blocks and make vectors pop
+        ctx.add_basemap(self.ax, crs="EPSG:3857", source=ctx.providers.Esri.WorldGrayCanvas)
 
-        # scatter principale
+        # Main scatter (vertical displacement)
         self.sc = self.ax.scatter(
             self.x_web, self.y_web, c=self.du, cmap='jet', s=220,
             edgecolors='white', linewidths=1.5, alpha=0.85, zorder=3)
 
-        # quiver vettori orizzontali
+        # Horizontal velocity quiver
         self.q = self.ax.quiver(
             self.x_web, self.y_web, self.de, self.dn,
             color='black', edgecolors='white', linewidth=0.5, zorder=8,
             width=0.0018, headwidth=4, headlength=4, headaxislength=3.5)
 
-        # Riposizionata la scala dei vettori: Y = 0.085 in figure coordinates (sopra i bottoni)
+        # Quiver scale key cleanly positioned at the bottom right
         self.qk = self.ax.quiverkey(
-            self.q, 0.85, 0.085, 50, '50 mm/yr', labelpos='E',
+            self.q, 0.88, 0.05, 50, '50 mm/yr', labelpos='E',
             coordinates='figure', fontproperties={'weight': 'bold'})
 
-        # marcatore Modalità 1
+        # Mode 1 marker (Single Station)
         self.star, = self.ax.plot(
             [], [], color='white', marker='*', markersize=22,
             markeredgecolor='black', markeredgewidth=2, zorder=5, linestyle='None')
 
-        # marcatori Modalità 2
+        # Mode 2 markers (Multi-Station)
         self.multi_markers = self.ax.scatter(
             [], [], s=320, facecolors='none',
             edgecolors='yellow', linewidths=2.5, zorder=6, marker='o')
             
-        # marcatore polo di rotazione Adria (Modalità 4)
+        # Adria Pole marker (Mode 4)
         self.adria_pole_marker, = self.ax.plot(
             [], [], color='magenta', marker='*', markersize=25,
             markeredgecolor='black', markeredgewidth=1.5, zorder=10, linestyle='None')
             
-        self.adria_pole_text = self.ax.text(0, 0, ' Polo Adria', color='magenta', 
+        self.adria_pole_text = self.ax.text(0, 0, ' Adria Pole', color='magenta', 
                                             fontsize=11, fontweight='bold', zorder=10,
                                             ha='left', va='center',
                                             path_effects=[path_effects.withStroke(linewidth=2, foreground="black")])
         self.adria_pole_text.set_visible(False)
 
+        # Colorbar
         self.cbar = self.fig.colorbar(
-            self.sc, ax=self.ax, label='Spostamento Verticale UP (mm)')
+            self.sc, ax=self.ax, label='Vertical Displacement UP (mm)')
 
-        # Salvataggio degli oggetti text per permetterne il toggle di visibilità
+        # Station labels setup
         for i in range(N):
             txt = self.ax.text(
                 self.x_web[i], self.y_web[i] + 150, self.names[i],
                 fontsize=7, ha='center', color='yellow',
                 path_effects=[path_effects.withStroke(linewidth=2, foreground="black")],
                 zorder=7)
-            self.testi_sigle.append(txt)
+            self.label_texts.append(txt)
 
-        self.ax.set_xlabel('Est Web Mercator (m)', fontsize=11)
-        self.ax.set_ylabel('Nord Web Mercator (m)', fontsize=11)
+        self.ax.set_xlabel('East Web Mercator (m)', fontsize=11)
+        self.ax.set_ylabel('North Web Mercator (m)', fontsize=11)
         self.ax.grid(True, linestyle='--', alpha=0.15, color='black')
         self.ax.set_aspect('equal')
 
-        # ---- bottoni (posizionati tra 0.02 e 0.065) ----
-        ax_btn_tab  = self.fig.add_axes([0.08, 0.02, 0.22, 0.045])
-        ax_btn_exp  = self.fig.add_axes([0.33, 0.02, 0.22, 0.045])
-        ax_btn_help = self.fig.add_axes([0.58, 0.02, 0.10, 0.045])
+        # ---- Buttons (Centered and aligned in the bottom margin) ----
+        ax_btn_tab  = self.fig.add_axes([0.15, 0.04, 0.18, 0.05])
+        ax_btn_exp  = self.fig.add_axes([0.35, 0.04, 0.18, 0.05])
+        ax_btn_help = self.fig.add_axes([0.55, 0.04, 0.10, 0.05])
 
-        self.btn_tabella  = Button(ax_btn_tab,  '📋  Mostra Tabella',   color='#d0e8ff', hovercolor='#90c0ff')
-        self.btn_esporta  = Button(ax_btn_exp,  '💾  Esporta Velocità', color='#d0ffd8', hovercolor='#80e880')
-        self.btn_help     = Button(ax_btn_help, '❓ Aiuto',             color='#fff0c0', hovercolor='#ffe060')
+        self.btn_table   = Button(ax_btn_tab,  '📋  Show Table',      color='#d0e8ff', hovercolor='#90c0ff')
+        self.btn_export  = Button(ax_btn_exp,  '💾  Export Velocities', color='#d0ffd8', hovercolor='#80e880')
+        self.btn_help    = Button(ax_btn_help, '❓ Help',             color='#fff0c0', hovercolor='#ffe060')
 
-        self.btn_tabella.on_clicked(self._mostra_tabella)
-        self.btn_esporta.on_clicked(self._esporta_diretta)
-        self.btn_help.on_clicked(lambda e: mostra_aiuto())
+        self.btn_table.on_clicked(self._show_table)
+        self.btn_export.on_clicked(self._export_direct)
+        self.btn_help.on_clicked(lambda e: show_help())
 
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         self.fig.canvas.mpl_connect('key_press_event',    self.on_key)
 
-        self.aggiorna_mappa()
+        self.update_map()
 
     # ==================================================================
-    # CALCOLO VELOCITÀ CORRENTI E POSIZIONE DEL POLO
+    # CALCULATE CURRENT VELOCITIES AND POLE POSITION
     # ==================================================================
-    def _velocita_correnti(self):
+    def _current_velocities(self):
         R_mm = 6378137.0 * 1000.0  
         rad_lat = np.radians(self.lat)
         rad_lon = np.radians(self.lon)
 
-        if self.modo_eurasia or self.modo_adria:
-            # POLO EURASIA (ITRF2014) 
+        if self.mode_eurasia or self.mode_adria:
+            # EURASIA POLE (ITRF2014) 
             mas2rad = np.pi / (180.0 * 3600.0 * 1000.0)
             Omega_X_eu = -0.085 * mas2rad
             Omega_Y_eu = -0.531 * mas2rad
@@ -360,13 +390,13 @@ class MappaInterattivaGNSSMappa:
             V_N_eu = R_mm * (Omega_X_eu * np.sin(rad_lon) - Omega_Y_eu * np.cos(rad_lon))
             V_E_eu = R_mm * (Omega_Z_eu * np.cos(rad_lat) - Omega_X_eu * np.sin(rad_lat) * np.cos(rad_lon) - Omega_Y_eu * np.sin(rad_lat) * np.sin(rad_lon))
 
-            if self.modo_eurasia and not self.modo_adria:
+            if self.mode_eurasia and not self.mode_adria:
                 de_res = self.de - V_E_eu
                 dn_res = self.dn - V_N_eu
-                desc = "Velocità Eurasia-Fixed (ITRF2014 PMM - Altamimi et al., 2017)"
+                desc = "Eurasia-Fixed Velocities (ITRF2014 PMM - Altamimi et al., 2017)"
                 return de_res, dn_res, self.du, desc
 
-            # POLO RELATIVO ADRIA-EURASIA (D'Agostino et al., 2008)
+            # RELATIVE ADRIA-EURASIA POLE (D'Agostino et al., 2008)
             omega_ad_rad = np.radians(0.309 / 1e6)
             lat_ad_rad = np.radians(45.790)
             lon_ad_rad = np.radians(7.780)
@@ -380,54 +410,54 @@ class MappaInterattivaGNSSMappa:
 
             de_res = self.de - V_E_eu - V_E_ad
             dn_res = self.dn - V_N_eu - V_N_ad
-            desc = "Residui Adria-Fixed (Rigoroso: ITRF2014->Eurasia->Adria - D'Agostino et al., 2008)"
+            desc = "Adria-Fixed Residuals (Rigorous: ITRF2014->Eurasia->Adria - D'Agostino et al., 2008)"
             return de_res, dn_res, self.du, desc
 
-        elif self.modo_multi and self.multi_set:
+        elif self.mode_multi and self.multi_set:
             idx = list(self.multi_set)
             ref_e = np.mean(self.de[idx])
             ref_n = np.mean(self.dn[idx])
             ref_u = np.mean(self.du[idx])
-            nomi_gruppo = ", ".join(self.names[i] for i in sorted(idx))
-            desc = (f"Velocità relative — riferimento MULTI-STAZIONE "
-                    f"({len(idx)} siti): {nomi_gruppo}  "
-                    f"[media: dE={ref_e:.2f} dN={ref_n:.2f} dU={ref_u:.2f} mm/yr]")
+            group_names = ", ".join(self.names[i] for i in sorted(idx))
+            desc = (f"Relative velocities — MULTI-STATION reference "
+                    f"({len(idx)} sites): {group_names}  "
+                    f"[mean: dE={ref_e:.2f} dN={ref_n:.2f} dU={ref_u:.2f} mm/yr]")
             return self.de - ref_e, self.dn - ref_n, self.du - ref_u, desc
 
         elif self.ref_idx is not None:
-            desc = f"Velocità relative — stazione di riferimento: {self.names[self.ref_idx]}"
+            desc = f"Relative velocities — reference station: {self.names[self.ref_idx]}"
             return (self.de - self.de[self.ref_idx],
                     self.dn - self.dn[self.ref_idx],
                     self.du - self.du[self.ref_idx],
                     desc)
         
         else:
-            return self.de.copy(), self.dn.copy(), self.du.copy(), "Velocità assolute input (ITRF2014)"
+            return self.de.copy(), self.dn.copy(), self.du.copy(), "Absolute input velocities (ITRF2014)"
 
     # ==================================================================
-    # AGGIORNAMENTO MAPPA
+    # UPDATE MAP RENDERING
     # ==================================================================
-    def aggiorna_mappa(self):
-        de_r, dn_r, du_r, desc = self._velocita_correnti()
+    def update_map(self):
+        de_r, dn_r, du_r, desc = self._current_velocities()
 
         self.q.set_UVC(de_r, dn_r)
         self.sc.set_array(du_r)
         self.sc.set_clim(vmin=du_r.min(), vmax=du_r.max())
 
-        if self.ref_idx is not None and not (self.modo_multi or self.modo_eurasia or self.modo_adria):
+        if self.ref_idx is not None and not (self.mode_multi or self.mode_eurasia or self.mode_adria):
             self.star.set_data([self.x_web[self.ref_idx]], [self.y_web[self.ref_idx]])
         else:
             self.star.set_data([], [])
 
-        if self.modo_multi and self.multi_set:
+        if self.mode_multi and self.multi_set:
             idx = list(self.multi_set)
             self.multi_markers.set_offsets(
                 np.c_[self.x_web[idx], self.y_web[idx]])
         else:
             self.multi_markers.set_offsets(np.empty((0, 2)))
 
-        # Visualizzazione del Polo di Adria
-        if self.modo_adria:
+        # Display Adria Pole
+        if self.mode_adria:
             lat_pole_adria = 45.790
             lon_pole_adria = 7.780
             x_pole = self.R_web * np.radians(lon_pole_adria)
@@ -436,155 +466,156 @@ class MappaInterattivaGNSSMappa:
             self.adria_pole_marker.set_data([x_pole], [y_pole])
             self.adria_pole_text.set_position((x_pole + 10000, y_pole)) 
             self.adria_pole_text.set_visible(True)
-            stato_modo = "[MODO 4: ADRIA RIGOROSO] Residui deformativi netti | [A] esci | [R] reset"
+            mode_status = "[MODE 4: RIGOROUS ADRIA] Net deformational residuals | [A] exit | [R] reset"
         else:
             self.adria_pole_marker.set_data([], [])
             self.adria_pole_text.set_visible(False)
-            if self.modo_eurasia:
-                stato_modo = "[MODO 3: EURASIA-FIXED] Dinamica rispetto placca EURA | [E] esci | [R] reset"
-            elif self.modo_multi:
+            if self.mode_eurasia:
+                mode_status = "[MODE 3: EURASIA-FIXED] Dynamics relative to EURA plate | [E] exit | [R] reset"
+            elif self.mode_multi:
                 n = len(self.multi_set)
-                stato_modo = (f"[MODO 2: MULTI-STAZIONE] {n} siti scelti "
-                              f"(Ctrl+Click) | [M] esci | [R] reset")
+                mode_status = (f"[MODE 2: MULTI-STATION] {n} sites chosen "
+                              f"(Ctrl+Click) | [M] exit | [R] reset")
             elif self.ref_idx is not None:
-                stato_modo = f"[MODO 1] Rif. Singolo: {self.names[self.ref_idx]} | [R] reset"
+                mode_status = f"[MODE 1] Single Ref: {self.names[self.ref_idx]} | [R] reset"
             else:
-                stato_modo = "Vettori ITRF2014 | [M] Multi | [E] Eurasia | [A] Polo Adria (Rig.)"
+                mode_status = "ITRF2014 Vectors | [M] Multi | [E] Eurasia | [A] Adria Pole (Rig.)"
 
-        # Aggiunta dell'indicazione del tasto per le sigle nel titolo
-        titolo = (f"{stato_modo}\n"
-                  f"[+][-] zoom  [T] tabella  [S] sigle  [R] svuota/reset  [?] aiuto")
-        self.ax.set_title(titolo, fontsize=10, fontweight='bold', pad=15)
+        # Construct title with instructions
+        title_text = (f"{mode_status}\n"
+                      f"[+][-] zoom  [T] table  [S] labels  [R] reset/clear  [?] help")
+        self.ax.set_title(title_text, fontsize=10, fontweight='bold', pad=15)
         self.fig.canvas.draw()
 
-        if self._finestra_tab is not None:
+        if self._table_window is not None:
             try:
-                self._finestra_tab.root.winfo_exists()
-                self._mostra_tabella()
+                self._table_window.root.winfo_exists()
+                self._show_table()
             except Exception:
-                self._finestra_tab = None
+                self._table_window = None
 
-    def _mostra_tabella(self, event=None):
-        de, dn, du, desc = self._velocita_correnti()
-        if self._finestra_tab is not None:
+    def _show_table(self, event=None):
+        de, dn, du, desc = self._current_velocities()
+        if self._table_window is not None:
             try:
-                self._finestra_tab.root.destroy()
+                self._table_window.root.destroy()
             except Exception:
                 pass
-        self._finestra_tab = FinestraTabella(
-            nomi=self.names, lon=self.lon, lat=self.lat,
+        self._table_window = TableWindow(
+            names=self.names, lon=self.lon, lat=self.lat,
             de=de, dn=dn, du=du,
-            descrizione_riferimento=desc,
-            percorso_input=self.filename)
+            reference_desc=desc,
+            input_path=self.filename)
 
-    def _esporta_diretta(self, event=None):
-        de, dn, du, desc = self._velocita_correnti()
-        cartella_default = os.path.dirname(self.filename)
+    def _export_direct(self, event=None):
+        de, dn, du, desc = self._current_velocities()
+        default_folder = os.path.dirname(self.filename)
         tag = desc.replace(" ", "_").replace(":", "").replace("->","-")[:40]
-        nome_default = f"velocita_{tag}.txt"
+        default_name = f"velocities_{tag}.txt"
 
         root_tmp = tk.Tk(); root_tmp.withdraw()
         root_tmp.attributes('-topmost', True)
-        percorso_out = filedialog.asksaveasfilename(
-            title="Salva velocità GNSS",
-            initialdir=cartella_default, initialfile=nome_default,
+        out_path = filedialog.asksaveasfilename(
+            title="Save GNSS velocities",
+            initialdir=default_folder, initialfile=default_name,
             defaultextension=".txt",
-            filetypes=[("File di testo", "*.txt"), ("Tutti i file", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         root_tmp.destroy()
-        if not percorso_out:
+        if not out_path:
             return
 
         try:
-            with open(percorso_out, 'w') as f:
+            with open(out_path, 'w') as f:
                 f.write(f"# {desc}\n")
-                f.write("# Formato: Lon(°)  Lat(°)  dE(mm/yr)  dN(mm/yr)  dU(mm/yr)  # Nome_Stazione\n#\n")
-                for i, nome in enumerate(self.names):
+                f.write("# Format: Lon(°)  Lat(°)  dE(mm/yr)  dN(mm/yr)  dU(mm/yr)  # Station_Name\n#\n")
+                for i, name in enumerate(self.names):
                     f.write(f"{self.lon[i]:.5f}  {self.lat[i]:.5f}  "
                             f"{de[i]:.4f}  {dn[i]:.4f}  {du[i]:.4f}"
-                            f"  # {nome}\n")
+                            f"  # {name}\n")
             self.ax.set_title(
-                f"✅ File salvato: {os.path.basename(percorso_out)}\n"
-                "(la mappa si aggiornerà al prossimo click/tasto)",
+                f"✅ File saved: {os.path.basename(out_path)}\n"
+                "(the map will update on the next click/keypress)",
                 fontsize=10, color="darkgreen")
             self.fig.canvas.draw()
         except Exception as err:
             root_err = tk.Tk(); root_err.withdraw()
-            messagebox.showerror("Errore di scrittura", f"Impossibile salvare:\n{err}")
+            messagebox.showerror("Write Error", f"Unable to save:\n{err}")
             root_err.destroy()
 
     def on_click(self, event):
+        # Ignore clicks if pan/zoom tools are active
         if self.fig.canvas.manager.toolbar.mode != '':
             return
         if event.inaxes != self.ax:
             return
 
-        distanze = (self.x_web - event.xdata)**2 + (self.y_web - event.ydata)**2
-        sito_vicino = np.argmin(distanze)
+        distances = (self.x_web - event.xdata)**2 + (self.y_web - event.ydata)**2
+        closest_site = np.argmin(distances)
         x_range = self.ax.get_xlim()[1] - self.ax.get_xlim()[0]
-        soglia = (x_range * 0.03)**2
+        threshold = (x_range * 0.03)**2
 
-        if distanze[sito_vicino] >= soglia:
+        # Ignore clicks that are too far from any station
+        if distances[closest_site] >= threshold:
             return   
 
-        if self.modo_multi and event.key == 'control':
-            if sito_vicino in self.multi_set:
-                self.multi_set.discard(sito_vicino)
+        if self.mode_multi and event.key == 'control':
+            if closest_site in self.multi_set:
+                self.multi_set.discard(closest_site)
             else:
-                self.multi_set.add(sito_vicino)
-            self.aggiorna_mappa()
+                self.multi_set.add(closest_site)
+            self.update_map()
 
-        elif not self.modo_multi:
-            self.ref_idx = sito_vicino
-            self.modo_eurasia = False
-            self.modo_adria = False
-            self.aggiorna_mappa()
+        elif not self.mode_multi:
+            self.ref_idx = closest_site
+            self.mode_eurasia = False
+            self.mode_adria = False
+            self.update_map()
 
     def on_key(self, event):
         if event.key in ['r', 'R']:
             self.ref_idx   = None
             self.multi_set = set()
-            self.modo_eurasia = False
-            self.modo_adria = False
-            self.aggiorna_mappa()
+            self.mode_eurasia = False
+            self.mode_adria = False
+            self.update_map()
 
         elif event.key in ['m', 'M']:
-            self.modo_multi = not self.modo_multi
-            if self.modo_multi:
-                self.modo_eurasia = False
-                self.modo_adria = False
+            self.mode_multi = not self.mode_multi
+            if self.mode_multi:
+                self.mode_eurasia = False
+                self.mode_adria = False
             else:
                 self.multi_set = set()
-            self.aggiorna_mappa()
+            self.update_map()
 
         elif event.key in ['e', 'E']:
-            self.modo_eurasia = not self.modo_eurasia
-            if self.modo_eurasia:
-                self.modo_multi = False
-                self.modo_adria = False
+            self.mode_eurasia = not self.mode_eurasia
+            if self.mode_eurasia:
+                self.mode_multi = False
+                self.mode_adria = False
                 self.ref_idx = None
-            self.aggiorna_mappa()
+            self.update_map()
 
         elif event.key in ['a', 'A']:
-            self.modo_adria = not self.modo_adria
-            if self.modo_adria:
-                self.modo_multi = False
-                self.modo_eurasia = False
+            self.mode_adria = not self.mode_adria
+            if self.mode_adria:
+                self.mode_multi = False
+                self.mode_eurasia = False
                 self.ref_idx = None
-            self.aggiorna_mappa()
+            self.update_map()
 
-        # Funzionalità per il toggle della visibilità delle sigle
         elif event.key in ['s', 'S']:
-            self.mostra_sigle = not self.mostra_sigle
-            for txt in self.testi_sigle:
-                txt.set_visible(self.mostra_sigle)
+            self.show_labels = not self.show_labels
+            for txt in self.label_texts:
+                txt.set_visible(self.show_labels)
             self.fig.canvas.draw()
 
         elif event.key in ['t', 'T']:
-            self._mostra_tabella()
+            self._show_table()
 
         elif event.key in ['?']:
-            mostra_aiuto()
+            show_help()
 
         elif event.key in ['+', '=']:
             if getattr(self.q, 'scale', None) is None:
@@ -600,23 +631,24 @@ class MappaInterattivaGNSSMappa:
 
 
 if __name__ == '__main__':
-    percorso_file = seleziona_file_input()
+    filepath = select_input_file()
 
-    if percorso_file is None:
+    # Fallback to default file if dialogue is cancelled
+    if filepath is None:
         if getattr(sys, 'frozen', False):
-            cartella_corrente = os.path.dirname(sys.executable)
+            current_dir = os.path.dirname(sys.executable)
         else:
-            cartella_corrente = os.path.dirname(os.path.abspath(__file__))
-        percorso_file = os.path.join(cartella_corrente, 'gnss_rino_input.txt')
-        if not os.path.exists(percorso_file):
-            print(f"[ERRORE] Nessun file selezionato e file di default non trovato:\n  {percorso_file}")
-            input("\nPremi INVIO per uscire...")
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+        filepath = os.path.join(current_dir, 'gnss_rino_input.txt')
+        if not os.path.exists(filepath):
+            print(f"[ERROR] No file selected and default file not found:\n  {filepath}")
+            input("\nPress ENTER to exit...")
             sys.exit()
 
-    if not os.path.exists(percorso_file):
-        print(f"[ERRORE] Impossibile trovare il file: {percorso_file}")
-        input("\nPremi INVIO per uscire...")
+    if not os.path.exists(filepath):
+        print(f"[ERROR] Cannot find file: {filepath}")
+        input("\nPress ENTER to exit...")
         sys.exit()
 
-    mappa = MappaInterattivaGNSSMappa(percorso_file)
+    map_app = InteractiveGNSSMap(filepath)
     plt.show()
