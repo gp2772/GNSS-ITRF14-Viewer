@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# *.txt  (Togli il # se vuoi impedire l'upload dei tuoi file GNSS)
