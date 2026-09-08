@@ -2,7 +2,7 @@
 
 Interactive Python tool for visualizing and analyzing GNSS velocity fields. Features real-time reference frame transformations (ITRF, Eurasia-fixed, Adria-fixed) to isolate local tectonic deformation.
 
-![GNSSvv Map Preview](path/to/your/image.png)
+![GNSSvv Map Preview](GNSSvv_example.png)
 
 
 An interactive Python-based viewer for exploring GNSS velocity fields and analyzing crustal kinematics. The tool allows seamless transitions from a global reference frame (ITRF) to regional or local frames to precisely map residual tectonic deformation.
