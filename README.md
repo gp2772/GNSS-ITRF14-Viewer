@@ -20,8 +20,8 @@ The software offers four real-time kinematic filtering modes:
 
 Ensure you have Python 3.x installed on your system. Clone the repository and install the required libraries:
 
-    git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-    cd YOUR_REPO_NAME
+    git clone https://github.com/gp2772/GNSS-ITRF14-Viewer
+    cd GNSS-ITRF14-Viewer
     pip install -r requirements.txt
 
 **Main Dependencies (`requirements.txt`):**
